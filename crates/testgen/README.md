@@ -17,8 +17,8 @@ Soroban contract project and it generates
 | `benches/forge_bench.rs` | (with `--bench`) criterion benchmarks, one per entrypoint, for tracking cost over time |
 | `fuzz/Cargo.toml`      | (with `--fuzz`) cargo-fuzz workspace manifest |
 | `fuzz/fuzz_targets/fuzz_target_1.rs` | (with `--fuzz`) property-based fuzzer feeding arbitrary values into detected contract methods |
-| `tests/forge_storage_isolation.rs` | (when 2+ of instance/persistent/temporary storage are used) asserts the same key written to each storage type stays independent |
-
+|| `tests/forge_storage_isolation.rs` | (when 2+ of instance/persistent/temporary storage are used) asserts the same key written to each storage type stays independent |
+| `tests/forge_overflow.rs` | (when an entrypoint takes an `i128` argument) calls it with large values near `i128::MAX`/`i128::MIN` and asserts no overflow, relying on cargo's default `overflow-checks = true` in the `dev` profile |
 Pass `--prop` (or `--invariant`/`--property`) to `test-init` to generate the
 property-based invariant harness, and `--fuzz` to emit a cargo-fuzz target.
 
@@ -62,6 +62,16 @@ finding, not a flaky test.
 the contract uses 2 or more of instance/persistent/temporary storage, and
 writes the same key to each, asserting a value read back from one storage
 type never leaks in from another — a common source of subtle bugs.
+
+`tests/forge_overflow.rs` needs no flag either. It is written whenever an
+entrypoint takes an `i128` argument — the type Soroban balances and amounts
+almost always use. One test per detected `i128` argument calls the entrypoint
+with a large value near `i128::MAX` and another near `i128::MIN` (both
+quartered, leaving headroom for a single addition or doubling inside the
+contract). `cargo test` builds against cargo's `dev` profile, which enables
+`overflow-checks = true` by default, so a real overflow in the contract's
+arithmetic surfaces as a panicking test failure rather than a silent
+wraparound.
 
 `--actors <N>` (default `3`) controls the size of the multi-user fixture
 generated in `tests/common/mod.rs`: a `pub struct Actors` with one named

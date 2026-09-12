@@ -19,6 +19,7 @@
 pub mod bench;
 pub mod containers;
 pub mod detect;
+pub mod overflow;
 pub mod target;
 pub mod upgrade;
 
@@ -31,6 +32,7 @@ use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 pub use detect::{inspect, ContractInfo};
 pub use bench::{build_bench, ensure_bench_target};
 pub use containers::build_roundtrip_tests;
+pub use overflow::build_overflow_tests;
 pub use target::{candidates, resolve, Candidate, Selection};
 pub use upgrade::build_upgrade_test;
 
@@ -1535,8 +1537,11 @@ pub fn generate_with_options_layout(
     let storage_isolation_test = build_storage_isolation_test(&info);
     // Empty unless the contract exposes an upgrade entrypoint (#234).
     let upgrade_test = build_upgrade_test(&info);
+   
     // Empty unless an entrypoint takes a container argument (#236).
     let roundtrip_test = build_roundtrip_tests(&info);
+    // Empty unless an entrypoint takes an i128 argument (#101)..
+    let overflow_test = build_overflow_tests(&info);
 
     let mut files: Vec<(&'static str, String)> = Vec::new();
     match layout {
@@ -1566,8 +1571,11 @@ pub fn generate_with_options_layout(
             if !upgrade_test.is_empty() {
                 files.push(("tests/forge_upgrade.rs", upgrade_test));
             }
-            if !roundtrip_test.is_empty() {
+                        if !roundtrip_test.is_empty() {
                 files.push(("tests/forge_roundtrip.rs", roundtrip_test));
+            }
+            if !overflow_test.is_empty() {
+                files.push(("tests/forge_overflow.rs", overflow_test));
             }
         }
         TestLayout::Inline => {
@@ -1594,8 +1602,11 @@ pub fn generate_with_options_layout(
             if !upgrade_test.is_empty() {
                 sections.push(("upgrade", upgrade_test));
             }
-            if !roundtrip_test.is_empty() {
+                       if !roundtrip_test.is_empty() {
                 sections.push(("roundtrip", roundtrip_test));
+            }
+            if !overflow_test.is_empty() {
+                sections.push(("overflow", overflow_test));
             }
             files.push((
                 INLINE_MODULE_PATH,
