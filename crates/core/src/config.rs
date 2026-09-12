@@ -198,16 +198,19 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
     let table: toml::Table = toml::from_str(raw)?;
     let mut strays = Vec::new();
     for (key, value) in &table {
-        match key.as_str() {
+                match key.as_str() {
             "project" => collect_strays(value, &["name", "authors"], "project", &mut strays),
             "scaffold" => {
                 collect_strays(value, &["default_template"], "scaffold", &mut strays)
             }
-            "defaults" => collect_strays(value, &["timeout_secs", "max_size"], "defaults", &mut strays),
-            "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
             "network" => collect_strays(value, &["name", "rpc_url", "passphrase"], "network", &mut strays),
             "defaults" => {
-                collect_strays(value, &["timeout_secs", "ci-init", "ci_init"], "defaults", &mut strays)
+                collect_strays(
+                    value,
+                    &["timeout_secs", "max_size", "ci-init", "ci_init"],
+                    "defaults",
+                    &mut strays,
+                );
                 if let toml::Value::Table(table) = value {
                     if let Some(ci_init) = table.get("ci-init").or_else(|| table.get("ci_init")) {
                         collect_strays(ci_init, &["max_size"], "defaults.ci-init", &mut strays);
@@ -267,12 +270,15 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
         // cannot depend on scaffold without a dependency cycle.
         None => out.push_str("default_template = \"hello-world\"  # default\n"),
     }
-    out.push_str("\n[defaults]\n");
+        out.push_str("\n[defaults]\n");
     match config.defaults.timeout_secs {
         Some(timeout_secs) => out.push_str(&format!("timeout_secs = {timeout_secs}\n")),
         None => out.push_str("# timeout_secs = (unset)\n"),
     }
     match config.defaults.max_size {
+        Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
+        None => out.push_str("# max_size = (unset)\n"),
+    }
 
     out.push_str("\n[network]\n");
     match &config.network.name {
@@ -282,6 +288,8 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
     match &config.network.rpc_url {
         Some(url) => out.push_str(&format!("rpc_url = \"{url}\"\n")),
         None => out.push_str("# rpc_url = (unset)\n"),
+    }
+
     out.push_str("\n[defaults.ci-init]\n");
     match config.defaults.ci_init.max_size {
         Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
