@@ -18,6 +18,7 @@ Soroban contract project and it generates
 | `fuzz/Cargo.toml`      | (with `--fuzz`) cargo-fuzz workspace manifest |
 | `fuzz/fuzz_targets/fuzz_target_1.rs` | (with `--fuzz`) property-based fuzzer feeding arbitrary values into detected contract methods |
 | `tests/forge_storage_isolation.rs` | (when 2+ of instance/persistent/temporary storage are used) asserts the same key written to each storage type stays independent |
+| `tests/forge_negative_auth.rs` | (when an entrypoint calls `require_auth()`) calls it via `try_*` with no auths mocked and asserts the call is rejected |
 
 Pass `--prop` (or `--invariant`/`--property`) to `test-init` to generate the
 property-based invariant harness, and `--fuzz` to emit a cargo-fuzz target.
@@ -62,6 +63,14 @@ finding, not a flaky test.
 the contract uses 2 or more of instance/persistent/temporary storage, and
 writes the same key to each, asserting a value read back from one storage
 type never leaks in from another — a common source of subtle bugs.
+
+`tests/forge_negative_auth.rs` needs no flag either. It is written for every
+entrypoint whose body calls `.require_auth()` on any address. Each test
+builds an `Env` with no auths mocked (unlike `common::test_env()`) and calls
+the entrypoint via `try_*`, asserting the call is rejected. A failure means
+the entrypoint succeeded — or panicked with something other than an auth
+error — despite nothing having authorized the call: a real authorization
+bug.
 
 `--actors <N>` (default `3`) controls the size of the multi-user fixture
 generated in `tests/common/mod.rs`: a `pub struct Actors` with one named

@@ -58,9 +58,14 @@ pub struct ContractInfo {
     /// Whether the contract reads or writes instance storage
     /// (`env.storage().instance()`).
     pub has_instance_storage: bool,
-    /// Whether the contract reads or writes temporary storage
+        /// Whether the contract reads or writes temporary storage
     /// (`env.storage().temporary()`).
     pub has_temporary_storage: bool,
+    /// Methods that call `.require_auth()` somewhere in their body (issue
+    /// #38). Drives the generated negative-auth test, which asserts each such
+    /// entrypoint rejects a call made without the corresponding address's
+    /// authorization mocked.
+    pub auth_required_methods: Vec<MethodInfo>,
 }
 
 /// A contract method discovered inside a `#[contractimpl]` block.
@@ -139,8 +144,9 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
     let events = find_events(&source);
     let has_contractevent = has_contractevent(&source);
 
-    let (has_token_deps, token_param_names) = detect_token_usage(&source);
+        let (has_token_deps, token_param_names) = detect_token_usage(&source);
     let init_method = detect_init_method(&methods);
+    let auth_required_methods = find_require_auth_methods(&source, &methods);
 
     Ok(ContractInfo {
         crate_name: manifest.package.name.replace('-', "_"),
@@ -160,6 +166,7 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
         has_persistent_storage: detect_persistent_storage(&source),
         has_instance_storage: detect_instance_storage(&source),
         has_temporary_storage: detect_temporary_storage(&source),
+        auth_required_methods,
     })
 }
 
@@ -387,6 +394,92 @@ pub fn detect_token_usage(source: &str) -> (bool, Vec<String>) {
 
     let has_token_deps = raw_hit || !param_names.is_empty();
     (has_token_deps, param_names)
+}
+
+// Find methods that call `.require_auth()` somewhere in their body (issue
+/// #38). Detection is on the token sequence `. require_auth ( )` appearing
+/// while inside the current method's body — the receiver before the `.` can
+/// be any expression (`admin`, `Self::merchant(env.clone())`,
+/// `env.current_contract_address()`), since only the `.require_auth()` call
+/// itself needs to be recognised. Returns the matching entries from
+/// `methods` (preserving their original order and `args`), not bare names.
+pub fn find_require_auth_methods(source: &str, methods: &[MethodInfo]) -> Vec<MethodInfo> {
+    let mut tokens = Vec::new();
+    let mut current_word = String::new();
+    for c in source.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            current_word.push(c);
+        } else {
+            if !current_word.is_empty() {
+                tokens.push(current_word.clone());
+                current_word.clear();
+            }
+            if !c.is_whitespace() {
+                tokens.push(c.to_string());
+            }
+        }
+    }
+    if !current_word.is_empty() {
+        tokens.push(current_word);
+    }
+
+    let mut found_names: Vec<String> = Vec::new();
+    let mut i = 0;
+    let mut in_contract_impl = false;
+    let mut brace_depth = 0;
+    let mut current_method: Option<String> = None;
+
+    while i < tokens.len() {
+        if tokens[i] == "#"
+            && i + 3 < tokens.len()
+            && tokens[i + 1] == "["
+            && tokens[i + 2] == "contractimpl"
+            && tokens[i + 3] == "]"
+        {
+            in_contract_impl = true;
+            i += 4;
+            continue;
+        }
+
+        if in_contract_impl && tokens[i] == "{" {
+            brace_depth += 1;
+        }
+
+        if in_contract_impl && tokens[i] == "}" {
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                in_contract_impl = false;
+                current_method = None;
+            }
+        }
+
+        if in_contract_impl && brace_depth == 1 && tokens[i] == "fn" && i + 1 < tokens.len() {
+            current_method = Some(tokens[i + 1].clone());
+        }
+
+        if in_contract_impl
+            && i >= 1
+            && tokens[i] == "require_auth"
+            && tokens[i - 1] == "."
+            && i + 2 < tokens.len()
+            && tokens[i + 1] == "("
+            && tokens[i + 2] == ")"
+        {
+            if let Some(name) = &current_method {
+                if !found_names.contains(name) {
+                    found_names.push(name.clone());
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    methods
+        .iter()
+        .filter(|m| found_names.contains(&m.name))
+        .cloned()
+        .collect()
 }
 
 /// Find all structs annotated with `#[contract]` (exactly — not
@@ -1131,7 +1224,7 @@ impl Demo {
         ));
     }
 
-    #[test]
+        #[test]
     fn ignores_instance_and_temporary_only_storage() {
         assert!(!detect_persistent_storage(
             "env.storage().instance().set(&key, &value);"
@@ -1140,5 +1233,123 @@ impl Demo {
             "env.storage().temporary().extend_ttl(&key, 10, 10);"
         ));
         assert!(!detect_persistent_storage("pub fn greet(env: Env) -> u32 { 42 }"));
+    }
+
+    // ── require_auth detection (issue #38) ─────────────────────────────
+
+    #[test]
+    fn finds_require_auth_on_a_plain_identifier() {
+        let src = r#"
+#[contractimpl]
+impl TokenContract {
+    pub fn mint(env: Env, admin: Address, to: Address, amount: i128) {
+        admin.require_auth();
+    }
+    pub fn balance(env: Env, id: Address) -> i128 {
+        0
+    }
+}
+"#;
+        let (methods, _) = find_methods(src);
+        let found = find_require_auth_methods(src, &methods);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "mint");
+    }
+
+    #[test]
+    fn finds_require_auth_on_a_method_call_receiver() {
+        let src = r#"
+#[contractimpl]
+impl SubscriptionContract {
+    pub fn renew(env: Env) {
+        Self::merchant(env.clone()).require_auth();
+    }
+    pub fn merchant(env: Env) -> Address {
+        env.current_contract_address()
+    }
+}
+"#;
+        let (methods, _) = find_methods(src);
+        let found = find_require_auth_methods(src, &methods);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "renew");
+    }
+
+    #[test]
+    fn finds_require_auth_on_current_contract_address() {
+        let src = r#"
+#[contractimpl]
+impl MultisigContract {
+    pub fn execute(env: Env) {
+        env.current_contract_address().require_auth();
+    }
+}
+"#;
+        let (methods, _) = find_methods(src);
+        let found = find_require_auth_methods(src, &methods);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "execute");
+    }
+
+    #[test]
+    fn methods_without_require_auth_are_not_matched() {
+        let src = r#"
+#[contractimpl]
+impl TokenContract {
+    pub fn balance(env: Env, id: Address) -> i128 {
+        0
+    }
+}
+"#;
+        let (methods, _) = find_methods(src);
+        assert!(find_require_auth_methods(src, &methods).is_empty());
+    }
+
+    #[test]
+    fn each_matched_method_appears_once_even_with_multiple_require_auth_calls() {
+        let src = r#"
+#[contractimpl]
+impl AtomicSwapContract {
+    pub fn swap(env: Env, party_a: Address, party_b: Address) {
+        party_a.require_auth();
+        party_b.require_auth();
+    }
+}
+"#;
+        let (methods, _) = find_methods(src);
+        let found = find_require_auth_methods(src, &methods);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "swap");
+    }
+
+    #[test]
+    fn inspect_surfaces_auth_required_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            r#"
+#[contract]
+pub struct Demo;
+
+#[contractimpl]
+impl Demo {
+    pub fn admin_only(env: Env, admin: Address) {
+        admin.require_auth();
+    }
+    pub fn get(env: Env) -> u32 { 0 }
+}
+"#,
+        )
+        .unwrap();
+
+        let info = inspect(dir.path()).unwrap();
+        assert_eq!(info.auth_required_methods.len(), 1);
+        assert_eq!(info.auth_required_methods[0].name, "admin_only");
     }
 }

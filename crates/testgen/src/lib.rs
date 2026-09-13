@@ -16,6 +16,7 @@
 //! contract declares a `__constructor`, sensible default arguments are
 //! generated for its registration in the smoke test.
 
+pub mod auth;
 pub mod bench;
 pub mod containers;
 pub mod detect;
@@ -29,6 +30,7 @@ use soroban_forge_core::render::{render_str, Vars};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
 pub use detect::{inspect, ContractInfo};
+pub use auth::build_negative_auth_tests;
 pub use bench::{build_bench, ensure_bench_target};
 pub use containers::build_roundtrip_tests;
 pub use target::{candidates, resolve, Candidate, Selection};
@@ -1537,6 +1539,8 @@ pub fn generate_with_options_layout(
     let upgrade_test = build_upgrade_test(&info);
     // Empty unless an entrypoint takes a container argument (#236).
     let roundtrip_test = build_roundtrip_tests(&info);
+    // Empty unless an entrypoint calls require_auth() (#38).
+    let negative_auth_test = build_negative_auth_tests(&info);
 
     let mut files: Vec<(&'static str, String)> = Vec::new();
     match layout {
@@ -1569,6 +1573,9 @@ pub fn generate_with_options_layout(
             if !roundtrip_test.is_empty() {
                 files.push(("tests/forge_roundtrip.rs", roundtrip_test));
             }
+            if !negative_auth_test.is_empty() {
+                files.push(("tests/forge_negative_auth.rs", negative_auth_test));
+            }
         }
         TestLayout::Inline => {
             let mut sections: Vec<(&str, String)> = vec![
@@ -1596,6 +1603,9 @@ pub fn generate_with_options_layout(
             }
             if !roundtrip_test.is_empty() {
                 sections.push(("roundtrip", roundtrip_test));
+            }
+            if !negative_auth_test.is_empty() {
+                sections.push(("negative_auth", negative_auth_test));
             }
             files.push((
                 INLINE_MODULE_PATH,
@@ -2244,6 +2254,7 @@ impl VaultContract {
             has_persistent_storage: false,
             has_instance_storage: false,
             has_temporary_storage: false,
+            auth_required_methods: vec![],
         }
     }
 
@@ -2266,6 +2277,7 @@ impl VaultContract {
             has_persistent_storage: false,
             has_instance_storage: false,
             has_temporary_storage: false,
+            auth_required_methods: vec![],
         }
     }
 
@@ -2328,7 +2340,9 @@ impl VaultContract {
                 "tests/common/mod.rs",
                 "tests/forge_smoke.rs",
                 "tests/forge_invariant.rs",
-                "tests/forge_snapshots.rs"
+                "tests/forge_snapshots.rs",
+                "tests/forge_error_paths.rs",
+                "tests/forge_reentrancy.rs"
             ]
         );
 
@@ -2598,7 +2612,9 @@ soroban-sdk = { version = "1", features = ["testutils"] }
                 "tests/common/mod.rs",
                 "tests/forge_smoke.rs",
                 "tests/forge_invariant.rs",
-                "tests/forge_snapshots.rs"
+                "tests/forge_snapshots.rs",
+                "tests/forge_error_paths.rs",
+                "tests/forge_reentrancy.rs"
             ]
         );
 
